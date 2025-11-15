@@ -26,6 +26,8 @@ gpui = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+zclone-ui = { path = "crates/zclone-ui" }
+zclone-core = { path = "crates/zclone-core" }
 
 [profile.dev]
 opt-level = 1

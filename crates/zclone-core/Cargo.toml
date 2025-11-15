@@ -13,3 +13,5 @@ async-trait = { workspace = true }
 log = { workspace = true }
 chrono = "0.4"
 uuid = { version = "1.0", features = ["v4", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+dirs = "5.0"
