@@ -1,377 +1,421 @@
-/// Component specifications for zClone GPUI layout hierarchy
+/// Component implementations for zClone GPUI layout hierarchy
 ///
-/// This module defines the core UI components that will be implemented in Phase 4+
+/// This module implements the core UI components for Phase 4
 
 use gpui::*;
+use gpui::prelude::*;
 use zclone_core::*;
+use crate::theme::*;
 
 /// Root application window component
-/// Manages the overall layout and coordinates between sidebar and chat surface
 pub struct AppWindow {
-    /// Reference to the sidebar component
-    sidebar: View<Sidebar>,
-    /// Reference to the active chat surface
-    chat_surface: View<ChatSurface>,
-    /// Reference to settings panel (when visible)
-    settings_panel: Option<View<SettingsPanel>>,
-    /// Application state
-    app_state: Model<AppState>,
+    app_state: Entity<AppState>,
+    sidebar_collapsed: bool,
+    theme: ZCloneTheme,
+    persistence: Option<SqliteStore>,
 }
 
 impl AppWindow {
-    pub fn new(cx: &mut WindowContext) -> View<Self> {
-        cx.new_view(|cx| {
-            let app_state = cx.new_model(|_| AppState::default());
-            let sidebar = Sidebar::new(app_state.clone(), cx);
-            let chat_surface = ChatSurface::new(app_state.clone(), cx);
+    pub fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        cx.new(|cx| {
+            let app_state = cx.new(|_| AppState::default());
+
+            // Initialize persistence
+            let persistence = SqliteStore::default_db_path()
+                .ok()
+                .and_then(|path| SqliteStore::new(path).ok());
+
+            // Load initial state from persistence
+            if let Some(store) = &persistence {
+                if let Ok(sessions) = store.load_all_sessions() {
+                    app_state.update(cx, |state, _| {
+                        state.sessions = sessions;
+                        if let Some(first_session) = state.sessions.first() {
+                            state.active_session_id = Some(first_session.id.clone());
+                        }
+                    });
+                }
+
+                if let Ok(Some(settings)) = store.load_settings() {
+                    app_state.update(cx, |state, _| {
+                        state.settings = settings;
+                    });
+                }
+            }
 
             Self {
-                sidebar,
-                chat_surface,
-                settings_panel: None,
                 app_state,
+                sidebar_collapsed: false,
+                theme: ZCloneTheme::dark(),
+                persistence,
             }
         })
     }
 
-    pub fn toggle_sidebar(&mut self, _cx: &mut ViewContext<Self>) {
-        // Implementation in Phase 4
+    pub fn toggle_sidebar(&mut self, _cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
     }
 
-    pub fn show_settings(&mut self, cx: &mut ViewContext<Self>) {
-        if self.settings_panel.is_none() {
-            self.settings_panel = Some(SettingsPanel::new(self.app_state.clone(), cx));
+    pub fn create_new_session(&mut self, cx: &mut Context<Self>) {
+        self.app_state.update(cx, |state, _| {
+            let session = ChatSession::new("New Chat");
+            state.active_session_id = Some(session.id.clone());
+
+            // Save to persistence
+            if let Some(store) = &mut self.persistence {
+                let _ = store.save_session(&session);
+            }
+
+            state.sessions.insert(0, session);
+        });
+    }
+
+    pub fn delete_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        self.app_state.update(cx, |state, _| {
+            state.sessions.retain(|s| s.id != session_id);
+
+            // If deleted session was active, select next one
+            if state.active_session_id.as_ref() == Some(&session_id) {
+                state.active_session_id = state.sessions.first().map(|s| s.id.clone());
+            }
+        });
+
+        // Delete from persistence
+        if let Some(store) = &mut self.persistence {
+            let _ = store.delete_session(&session_id);
         }
     }
 
-    pub fn hide_settings(&mut self, _cx: &mut ViewContext<Self>) {
-        self.settings_panel = None;
+    pub fn set_active_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        self.app_state.update(cx, |state, _| {
+            if state.sessions.iter().any(|s| s.id == session_id) {
+                state.active_session_id = Some(session_id);
+            }
+        });
     }
 }
 
 impl Render for AppWindow {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = &self.theme;
+        let sessions = self.app_state.read(cx).sessions.clone();
+        let active_id = self.app_state.read(cx).active_session_id.clone();
+
         div()
             .flex()
-            .flex_row()
             .size_full()
-            .child(self.sidebar.clone())
-            .child(self.chat_surface.clone())
-            .when_some(self.settings_panel.clone(), |el, panel| {
-                el.child(panel)
-            })
+            .bg(theme.colors.surface_primary)
+            .child(
+                // Sidebar
+                self.render_sidebar(cx, &sessions, &active_id)
+            )
+            .child(
+                // Main content
+                self.render_main_content(cx, &active_id)
+            )
     }
 }
 
-/// Sidebar component with session list and controls
-pub struct Sidebar {
-    app_state: Model<AppState>,
-    /// Whether the sidebar is collapsed
-    is_collapsed: bool,
-    /// Search filter text
-    search_filter: String,
-    /// Scroll offset for virtualization
-    scroll_offset: f32,
-}
+impl AppWindow {
+    fn render_sidebar(
+        &mut self,
+        cx: &mut Context<Self>,
+        sessions: &[ChatSession],
+        active_id: &Option<String>,
+    ) -> impl IntoElement {
+        let theme = &self.theme;
 
-impl Sidebar {
-    pub fn new(app_state: Model<AppState>, cx: &mut WindowContext) -> View<Self> {
-        cx.new_view(|_| Self {
-            app_state,
-            is_collapsed: false,
-            search_filter: String::new(),
-            scroll_offset: 0.0,
-        })
-    }
+        if self.sidebar_collapsed {
+            return div().w(px(0.0));
+        }
 
-    pub fn toggle_collapse(&mut self, _cx: &mut ViewContext<Self>) {
-        self.is_collapsed = !self.is_collapsed;
-    }
-
-    pub fn create_new_session(&mut self, _cx: &mut ViewContext<Self>) {
-        // Implementation in Phase 4
-    }
-
-    pub fn filter_sessions(&mut self, filter: String, _cx: &mut ViewContext<Self>) {
-        self.search_filter = filter;
-    }
-}
-
-impl Render for Sidebar {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
         div()
-            .flex()
-            .flex_col()
             .w(px(280.0))
             .h_full()
-            .bg(rgb(0x1e1e1e))
-            .when(self.is_collapsed, |el| el.w(px(0.0)))
+            .bg(theme.colors.sidebar_bg)
+            .border_r_1()
+            .border_color(theme.colors.border_primary)
+            .flex()
+            .flex_col()
             .child(
-                // Toolbar with new chat button
+                // Header with New Chat button
                 div()
-                    .h(px(48.0))
-                    .child("New Chat Button")
+                    .h(px(56.0))
+                    .px(theme.spacing.md)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(theme.colors.border_primary)
+                    .child(
+                        div()
+                            .text_color(theme.colors.text_primary)
+                            .text_size(theme.typography.display_small.font_size)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Chats")
+                    )
+                    .child(
+                        div()
+                            .id("new-chat-button")
+                            .px(theme.spacing.sm)
+                            .py(theme.spacing.xs)
+                            .bg(theme.colors.accent)
+                            .rounded(theme.radius.md)
+                            .text_color(theme.colors.text_inverse)
+                            .text_size(theme.typography.body_medium.font_size)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                                this.create_new_session(cx);
+                            }))
+                            .child("New +")
+                    )
             )
             .child(
-                // Search/filter input
-                div()
-                    .h(px(40.0))
-                    .child("Search input")
-            )
-            .child(
-                // Session list (virtualized)
+                // Session list
                 div()
                     .flex_1()
-                    .child("Session list items")
+                    .p(theme.spacing.sm)
+                    .flex()
+                    .flex_col()
+                    .gap(theme.spacing.xs)
+                    .children(
+                        sessions.iter().map(|session| {
+                            self.render_session_item(cx, session, active_id)
+                        })
+                    )
             )
     }
-}
 
-/// Session list item component
-pub struct SessionListItem {
-    session: ChatSession,
-    is_active: bool,
-}
+    fn render_session_item(
+        &mut self,
+        cx: &mut Context<Self>,
+        session: &ChatSession,
+        active_id: &Option<String>,
+    ) -> impl IntoElement {
+        let theme = &self.theme;
+        let is_active = active_id.as_ref() == Some(&session.id);
+        let session_id = session.id.clone();
+        let session_id_for_delete = session.id.clone();
 
-impl SessionListItem {
-    pub fn new(session: ChatSession, is_active: bool) -> Self {
-        Self { session, is_active }
-    }
-}
-
-impl Render for SessionListItem {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
         div()
-            .flex()
-            .flex_col()
-            .p(px(12.0))
-            .rounded(px(8.0))
-            .when(self.is_active, |el| el.bg(rgb(0x2a2a2a)))
+            .id(SharedString::from(format!("session-item-{}", session_id)))
+            .p(theme.spacing.md)
+            .rounded(theme.radius.md)
+            .cursor_pointer()
+            .when(is_active, |div| {
+                div.bg(theme.colors.sidebar_item_active)
+            })
+            .when(!is_active, |div| {
+                div.hover(|style| style.bg(theme.colors.sidebar_item_hover))
+            })
+            .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                this.set_active_session(session_id.clone(), cx);
+            }))
             .child(
-                // Title
                 div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(self.session.title.clone())
+                    .flex()
+                    .flex_col()
+                    .gap(theme.spacing.xs)
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_color(theme.colors.text_primary)
+                                    .text_size(theme.typography.body_medium.font_size)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(session.title.clone())
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("delete-session-{}", session_id_for_delete)))
+                                    .px(theme.spacing.xs)
+                                    .py(px(2.0))
+                                    .rounded(theme.radius.sm)
+                                    .text_color(theme.colors.error)
+                                    .text_size(theme.typography.body_small.font_size)
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.colors.surface_hover))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                                        this.delete_session(session_id_for_delete.clone(), cx);
+                                    }))
+                                    .child("✕")
+                            )
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.colors.text_secondary)
+                            .text_size(theme.typography.body_small.font_size)
+                            .child(
+                                session.preview
+                                    .clone()
+                                    .unwrap_or_else(|| "No messages yet".to_string())
+                            )
+                    )
             )
-            .child(
-                // Preview
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x888888))
-                    .child(self.session.preview.clone().unwrap_or_default())
-            )
-    }
-}
-
-/// Main chat surface component with message list and composer
-pub struct ChatSurface {
-    app_state: Model<AppState>,
-    /// Scroll position in message list
-    scroll_position: f32,
-    /// Current composer text
-    composer_text: String,
-}
-
-impl ChatSurface {
-    pub fn new(app_state: Model<AppState>, cx: &mut WindowContext) -> View<Self> {
-        cx.new_view(|_| Self {
-            app_state,
-            scroll_position: 0.0,
-            composer_text: String::new(),
-        })
     }
 
-    pub fn send_message(&mut self, _cx: &mut ViewContext<Self>) {
-        // Implementation in Phase 5
-    }
+    fn render_main_content(
+        &mut self,
+        cx: &mut Context<Self>,
+        active_id: &Option<String>,
+    ) -> impl IntoElement {
+        let theme = &self.theme;
+        let sessions = self.app_state.read(cx).sessions.clone();
+        let active_session = active_id.as_ref()
+            .and_then(|id| sessions.iter().find(|s| &s.id == id));
 
-    pub fn scroll_to_bottom(&mut self, _cx: &mut ViewContext<Self>) {
-        // Implementation in Phase 5
-    }
-}
-
-impl Render for ChatSurface {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
         div()
-            .flex()
-            .flex_col()
             .flex_1()
-            .bg(rgb(0x1a1a1a))
+            .h_full()
+            .flex()
+            .flex_col()
             .child(
-                // Message list (virtualized)
+                // Header
+                div()
+                    .h(px(56.0))
+                    .border_b_1()
+                    .border_color(theme.colors.border_primary)
+                    .flex()
+                    .items_center()
+                    .px(theme.spacing.lg)
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_color(theme.colors.text_primary)
+                            .text_size(theme.typography.display_small.font_size)
+                            .font_weight(FontWeight::BOLD)
+                            .child(
+                                active_session
+                                    .map(|s| s.title.clone())
+                                    .unwrap_or_else(|| "zClone".to_string())
+                            )
+                    )
+                    .child(
+                        div()
+                            .id("toggle-sidebar")
+                            .px(theme.spacing.sm)
+                            .py(theme.spacing.xs)
+                            .rounded(theme.radius.md)
+                            .text_color(theme.colors.text_secondary)
+                            .text_size(theme.typography.body_medium.font_size)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.colors.surface_hover))
+                            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                                this.toggle_sidebar(cx);
+                            }))
+                            .child(if self.sidebar_collapsed { "☰ Show" } else { "☰ Hide" })
+                    )
+            )
+            .child(
+                // Content area
                 div()
                     .flex_1()
-                    .child("Message list")
+                    .p(theme.spacing.xxl)
+                    .when_some(active_session, |div, session| {
+                        div.child(self.render_chat_view(session))
+                    })
+                    .when(active_session.is_none(), |div| {
+                        div.child(self.render_empty_state())
+                    })
+            )
+    }
+
+    fn render_chat_view(&self, session: &ChatSession) -> impl IntoElement {
+        let theme = &self.theme;
+        let is_empty = session.messages.is_empty();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.spacing.lg)
+            .child(
+                div()
+                    .text_color(theme.colors.text_primary)
+                    .text_size(theme.typography.display_medium.font_size)
+                    .font_weight(FontWeight::BOLD)
+                    .child(session.title.clone())
             )
             .child(
-                // Composer
                 div()
-                    .h(px(120.0))
-                    .child(Composer::new())
+                    .flex()
+                    .flex_col()
+                    .gap(theme.spacing.md)
+                    .children(
+                        session.messages.iter().map(|msg| {
+                            self.render_message(msg)
+                        })
+                    )
+                    .when(is_empty, |d| {
+                        d.child(
+                            div()
+                                .text_color(theme.colors.text_secondary)
+                                .text_size(theme.typography.body_large.font_size)
+                                .child("No messages yet. Start a conversation!")
+                        )
+                    })
             )
     }
-}
 
-/// Message bubble component
-pub struct MessageBubble {
-    message: Message,
-}
-
-impl MessageBubble {
-    pub fn new(message: Message) -> Self {
-        Self { message }
-    }
-}
-
-impl Render for MessageBubble {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let bg_color = match self.message.role {
-            Role::User => rgb(0x2a2a2a),
-            Role::Assistant => rgb(0x1e1e1e),
-            Role::System => rgb(0x3a3a3a),
+    fn render_message(&self, message: &Message) -> impl IntoElement {
+        let theme = &self.theme;
+        let bg_color = match message.role {
+            Role::User => theme.colors.message_user,
+            Role::Assistant => theme.colors.message_assistant,
+            Role::System => theme.colors.message_system,
         };
 
         div()
+            .p(theme.spacing.md)
+            .bg(bg_color)
+            .rounded(theme.radius.md)
+            .border_1()
+            .border_color(theme.colors.border_secondary)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.spacing.xs)
+                    .child(
+                        div()
+                            .text_color(theme.colors.text_secondary)
+                            .text_size(theme.typography.body_small.font_size)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("{:?}", message.role))
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.colors.text_primary)
+                            .text_size(theme.typography.body_medium.font_size)
+                            .line_height(theme.typography.body_medium.line_height)
+                            .child(message.content.clone())
+                    )
+            )
+    }
+
+    fn render_empty_state(&self) -> impl IntoElement {
+        let theme = &self.theme;
+
+        div()
             .flex()
             .flex_col()
-            .p(px(16.0))
-            .bg(bg_color)
-            .rounded(px(8.0))
-            .child(
-                // Role indicator
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(format!("{:?}", self.message.role))
-            )
-            .child(
-                // Content (will support markdown in Phase 5)
-                div()
-                    .text_sm()
-                    .child(self.message.content.clone())
-            )
-            .when(self.message.is_streaming, |el| {
-                el.child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(0x888888))
-                        .child("Streaming...")
-                )
-            })
-    }
-}
-
-/// Composer component for input
-pub struct Composer {
-    text: String,
-    is_focused: bool,
-}
-
-impl Composer {
-    pub fn new() -> Self {
-        Self {
-            text: String::new(),
-            is_focused: false,
-        }
-    }
-
-    pub fn send(&mut self, _cx: &mut ViewContext<Self>) {
-        // Implementation in Phase 5
-    }
-}
-
-impl Default for Composer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Render for Composer {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_row()
-            .p(px(16.0))
-            .gap(px(12.0))
-            .bg(rgb(0x2a2a2a))
-            .rounded(px(8.0))
-            .child(
-                // Multiline text input
-                div()
-                    .flex_1()
-                    .child("Text input area")
-            )
-            .child(
-                // Send button
-                div()
-                    .w(px(48.0))
-                    .h(px(48.0))
-                    .child("Send")
-            )
-    }
-}
-
-/// Settings panel component
-pub struct SettingsPanel {
-    app_state: Model<AppState>,
-    /// API key input (masked)
-    api_key_input: String,
-    /// Whether to show the API key
-    show_api_key: bool,
-}
-
-impl SettingsPanel {
-    pub fn new(app_state: Model<AppState>, cx: &mut WindowContext) -> View<Self> {
-        cx.new_view(|_| Self {
-            app_state,
-            api_key_input: String::new(),
-            show_api_key: false,
-        })
-    }
-
-    pub fn save_settings(&mut self, _cx: &mut ViewContext<Self>) {
-        // Implementation in Phase 6
-    }
-
-    pub fn test_connection(&mut self, _cx: &mut ViewContext<Self>) {
-        // Implementation in Phase 6
-    }
-}
-
-impl Render for SettingsPanel {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
-        div()
-            .absolute()
-            .top(px(0.0))
-            .right(px(0.0))
-            .w(px(400.0))
-            .h_full()
-            .bg(rgb(0x252525))
-            .p(px(24.0))
+            .items_center()
+            .justify_center()
+            .gap(theme.spacing.lg)
             .child(
                 div()
-                    .text_lg()
+                    .text_color(theme.colors.text_primary)
+                    .text_size(theme.typography.display_large.font_size)
                     .font_weight(FontWeight::BOLD)
-                    .child("Settings")
+                    .child("Welcome to zClone")
             )
             .child(
-                // API Key section
                 div()
-                    .mt(px(24.0))
-                    .child("API Key Input")
-            )
-            .child(
-                // Model selection
-                div()
-                    .mt(px(16.0))
-                    .child("Model selector")
-            )
-            .child(
-                // Theme toggle
-                div()
-                    .mt(px(16.0))
-                    .child("Theme toggle")
+                    .text_color(theme.colors.text_secondary)
+                    .text_size(theme.typography.body_large.font_size)
+                    .child("Create a new chat to get started")
             )
     }
 }
