@@ -13,6 +13,7 @@ pub struct AppWindow {
     sidebar_collapsed: bool,
     theme: ZCloneTheme,
     persistence: Option<SqliteStore>,
+    composer_text: String,
 }
 
 impl AppWindow {
@@ -48,6 +49,7 @@ impl AppWindow {
                 sidebar_collapsed: false,
                 theme: ZCloneTheme::dark(),
                 persistence,
+                composer_text: String::new(),
             }
         })
     }
@@ -58,7 +60,19 @@ impl AppWindow {
 
     pub fn create_new_session(&mut self, cx: &mut Context<Self>) {
         self.app_state.update(cx, |state, _| {
-            let session = ChatSession::new("New Chat");
+            let mut session = ChatSession::new("New Chat");
+
+            // Add welcome messages for demonstration
+            session.messages.push(Message::new(
+                Role::System,
+                "Welcome to zClone! This is a ChatGPT-style interface built with GPUI.".to_string()
+            ));
+            session.messages.push(Message::new(
+                Role::Assistant,
+                "Hello! I'm ready to help. How can I assist you today?".to_string()
+            ));
+            session.preview = Some("Hello! I'm ready to help...".to_string());
+
             state.active_session_id = Some(session.id.clone());
 
             // Save to persistence
@@ -92,6 +106,47 @@ impl AppWindow {
                 state.active_session_id = Some(session_id);
             }
         });
+    }
+
+    pub fn update_composer_text(&mut self, text: String, _cx: &mut Context<Self>) {
+        self.composer_text = text;
+    }
+
+    pub fn send_message(&mut self, cx: &mut Context<Self>) {
+        let text = self.composer_text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+
+        let active_id = self.app_state.read(cx).active_session_id.clone();
+        if let Some(session_id) = active_id {
+            self.app_state.update(cx, |state, _| {
+                if let Some(session) = state.sessions.iter_mut().find(|s| s.id == session_id) {
+                    // Add user message
+                    let user_message = Message::new(Role::User, text.clone());
+                    session.messages.push(user_message);
+
+                    // Update preview with latest message
+                    session.preview = Some(text.chars().take(60).collect());
+
+                    // Save session to persistence
+                    if let Some(store) = &mut self.persistence {
+                        let _ = store.save_session(session);
+                    }
+
+                    // TODO: In Phase 6, this will trigger OpenAI API call
+                    // For now, add a placeholder assistant response
+                    let assistant_message = Message::new(
+                        Role::Assistant,
+                        "This is a placeholder response. OpenAI integration coming in Phase 6!".to_string()
+                    );
+                    session.messages.push(assistant_message);
+                }
+            });
+
+            // Clear composer
+            self.composer_text.clear();
+        }
     }
 }
 
@@ -262,10 +317,36 @@ impl AppWindow {
         cx: &mut Context<Self>,
         active_id: &Option<String>,
     ) -> impl IntoElement {
-        let theme = &self.theme;
+        let theme = self.theme.clone();
         let sessions = self.app_state.read(cx).sessions.clone();
         let active_session = active_id.as_ref()
-            .and_then(|id| sessions.iter().find(|s| &s.id == id));
+            .and_then(|id| sessions.iter().find(|s| &s.id == id))
+            .cloned();
+        let sidebar_collapsed = self.sidebar_collapsed;
+
+        let content = if let Some(session) = active_session {
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .child(self.render_chat_view_with_composer(cx, &session))
+        } else {
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex_1()
+                        .p(theme.spacing.xxl)
+                        .child(self.render_empty_state())
+                )
+        };
+
+        let title = active_id.as_ref()
+            .and_then(|id| sessions.iter().find(|s| &s.id == id))
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "zClone".to_string());
 
         div()
             .flex_1()
@@ -287,11 +368,7 @@ impl AppWindow {
                             .text_color(theme.colors.text_primary)
                             .text_size(theme.typography.display_small.font_size)
                             .font_weight(FontWeight::BOLD)
-                            .child(
-                                active_session
-                                    .map(|s| s.title.clone())
-                                    .unwrap_or_else(|| "zClone".to_string())
-                            )
+                            .child(title)
                     )
                     .child(
                         div()
@@ -306,20 +383,29 @@ impl AppWindow {
                             .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
                                 this.toggle_sidebar(cx);
                             }))
-                            .child(if self.sidebar_collapsed { "☰ Show" } else { "☰ Hide" })
+                            .child(if sidebar_collapsed { "☰ Show" } else { "☰ Hide" })
                     )
             )
+            .child(content)
+    }
+
+    fn render_chat_view_with_composer(&mut self, cx: &mut Context<Self>, session: &ChatSession) -> impl IntoElement {
+        let theme = &self.theme;
+
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
             .child(
-                // Content area
+                // Messages area (scrollable)
                 div()
                     .flex_1()
                     .p(theme.spacing.xxl)
-                    .when_some(active_session, |div, session| {
-                        div.child(self.render_chat_view(session))
-                    })
-                    .when(active_session.is_none(), |div| {
-                        div.child(self.render_empty_state())
-                    })
+                    .child(self.render_chat_view(session))
+            )
+            .child(
+                // Composer area (fixed at bottom)
+                self.render_composer(cx)
             )
     }
 
@@ -416,6 +502,87 @@ impl AppWindow {
                     .text_color(theme.colors.text_secondary)
                     .text_size(theme.typography.body_large.font_size)
                     .child("Create a new chat to get started")
+            )
+    }
+
+    fn render_composer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = &self.theme;
+        let text = self.composer_text.clone();
+        let is_empty = text.trim().is_empty();
+
+        div()
+            .border_t_1()
+            .border_color(theme.colors.border_primary)
+            .bg(theme.colors.surface_secondary)
+            .p(theme.spacing.md)
+            .child(
+                div()
+                    .flex()
+                    .gap(theme.spacing.sm)
+                    .items_end()
+                    .child(
+                        // Text input area
+                        div()
+                            .flex_1()
+                            .min_h(px(48.0))
+                            .max_h(px(200.0))
+                            .p(theme.spacing.sm)
+                            .bg(theme.colors.surface_primary)
+                            .border_1()
+                            .border_color(theme.colors.border_primary)
+                            .rounded(theme.radius.md)
+                            .text_color(theme.colors.text_primary)
+                            .text_size(theme.typography.body_medium.font_size)
+                            .child(
+                                // Placeholder for actual text input
+                                // GPUI doesn't have a built-in textarea, so we'll use a div for now
+                                // In a real implementation, this would be a proper input element
+                                div()
+                                    .child(
+                                        if text.is_empty() {
+                                            "Type a message... (Note: This is a visual mock - full input in Phase 6)".to_string()
+                                        } else {
+                                            text.clone()
+                                        }
+                                    )
+                            )
+                    )
+                    .child(
+                        // Send button
+                        div()
+                            .id("send-message-button")
+                            .px(theme.spacing.md)
+                            .py(theme.spacing.sm)
+                            .min_w(px(80.0))
+                            .h(px(48.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(theme.radius.md)
+                            .text_color(if is_empty { theme.colors.text_disabled } else { theme.colors.text_inverse })
+                            .text_size(theme.typography.body_medium.font_size)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when(!is_empty, |div| {
+                                div.bg(theme.colors.accent)
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.colors.accent_hover))
+                                    .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                                        this.send_message(cx);
+                                    }))
+                            })
+                            .when(is_empty, |div| {
+                                div.bg(theme.colors.surface_tertiary)
+                            })
+                            .child("Send")
+                    )
+            )
+            .child(
+                // Helper text
+                div()
+                    .mt(theme.spacing.xs)
+                    .text_color(theme.colors.text_tertiary)
+                    .text_size(theme.typography.body_small.font_size)
+                    .child("Cmd+Enter to send · Shift+Enter for new line (coming in Phase 6)")
             )
     }
 }

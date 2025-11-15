@@ -10,7 +10,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("zClone - Phase 4: Sidebar & Sessions".into()),
+                    title: Some("zClone - Phase 5: Chat Surface & Composer".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
