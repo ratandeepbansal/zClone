@@ -1,0 +1,36 @@
+[package]
+name = "zclone"
+version = "0.1.0"
+edition = "2021"
+authors = ["zClone Team"]
+description = "A fast, smooth ChatGPT clone built with GPUI for macOS"
+license = "MIT"
+
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1277f328c42c1e61f26717675b14f3e99627b2fe" }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+log = "0.4"
+env_logger = "0.11"
+
+[dependencies]
+gpui = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

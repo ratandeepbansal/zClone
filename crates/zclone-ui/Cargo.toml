@@ -1,0 +1,12 @@
+[package]
+name = "zclone-ui"
+version = "0.1.0"
+edition = "2021"
+description = "UI components and views for zClone"
+
+[dependencies]
+gpui = { workspace = true }
+zclone-core = { path = "../zclone-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }

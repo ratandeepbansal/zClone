@@ -1,0 +1,16 @@
+[package]
+name = "zclone-api"
+version = "0.1.0"
+edition = "2021"
+description = "OpenAI API integration for zClone"
+
+[dependencies]
+zclone-core = { path = "../zclone-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+log = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "stream"] }
